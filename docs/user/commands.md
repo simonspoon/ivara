@@ -1,6 +1,6 @@
 # Commands Reference
 
-ivara provides 9 commands for capturing, querying, and managing Claude Code session data.
+ivara provides 10 commands for capturing, querying, and managing Claude Code session data.
 
 All commands that produce tabular output support a `--json` flag for machine-readable JSON output.
 
@@ -36,6 +36,42 @@ ivara sessions --json
 | `--limit` | integer | `20` | Maximum number of sessions to display. |
 
 Table output columns: SESSION (ID, truncated to 38 chars), LAST SEEN (timestamp, truncated to 19 chars), DURATION (computed from first to last event), EVENTS (count), CWD.
+
+## active
+
+List currently-live sessions. A session is active when it has recorded a `SessionStart` event and has not yet recorded a `SessionEnd` event.
+
+```bash
+ivara active
+ivara active --limit 5
+ivara active --json
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool | `false` | Output as JSON array. |
+| `--limit` | integer | `20` | Maximum number of sessions to display. |
+
+Table output columns: SESSION (ID, truncated to 38 chars), LAST SEEN (timestamp, truncated to 19 chars), DURATION (first event to last event), EVENTS (count), CWD, IDLE (human-readable elapsed since the most recent event, e.g. `12s`, `5m`, `1h 3m`), TOOL (tool name from the most recent `PreToolUse` that has no matching `PostToolUse` or `PostToolUseFailure`; empty when nothing is in flight), MODEL (opus / sonnet / haiku, from the `SessionStart` event; empty when unknown).
+
+Rows are ordered by most-recent activity first. When no sessions are active, the command prints `No active sessions.` and exits 0.
+
+JSON output shape (keys are snake_case):
+
+```json
+[
+  {
+    "session_id": "abc-123",
+    "last_seen": "2026-04-22T19:22:13+00:00",
+    "duration": "5m 12s",
+    "event_count": 42,
+    "cwd": "/proj",
+    "idle": "12s",
+    "tool": "Bash",
+    "model": "opus"
+  }
+]
+```
 
 ## timeline
 
@@ -223,6 +259,7 @@ Outputs a JSON array to stdout where each element is an event object with an add
 - CLI definition (all commands and flags): `src/cli.rs`
 - Capture: `src/commands/capture.rs`
 - Sessions: `src/commands/sessions.rs`
+- Active: `src/commands/active.rs`
 - Timeline, show, query: `src/commands/query.rs`
 - Stats, summary: `src/commands/analysis.rs`
 - Prune, export: `src/commands/maintenance.rs`

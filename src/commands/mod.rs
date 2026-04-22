@@ -1,3 +1,4 @@
+pub mod active;
 pub mod analysis;
 pub mod capture;
 pub mod hooks;

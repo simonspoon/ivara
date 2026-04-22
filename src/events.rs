@@ -153,6 +153,19 @@ pub struct Session {
     pub model: Option<String>,
 }
 
+/// Live-session row — what `ivara active` emits. Columns mirror the CLI table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveSession {
+    pub session_id: String,
+    pub last_seen: String,
+    pub duration: String,
+    pub event_count: i64,
+    pub cwd: Option<String>,
+    pub idle: String,
+    pub tool: Option<String>,
+    pub model: Option<String>,
+}
+
 /// Raw hook input from stdin — the full JSON blob Claude Code sends.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookInput {

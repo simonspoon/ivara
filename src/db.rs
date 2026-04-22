@@ -136,6 +136,68 @@ pub fn list_sessions(conn: &Connection, limit: i64) -> Result<Vec<crate::events:
     Ok(sessions)
 }
 
+/// List active sessions — rows with at least one `SessionStart` event and no `SessionEnd` event.
+///
+/// Ordered by most-recent activity first.
+pub fn list_active_sessions(
+    conn: &Connection,
+    limit: i64,
+) -> Result<Vec<crate::events::Session>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.session_id, s.first_seen, s.last_seen, s.event_count, s.cwd, s.model
+         FROM sessions s
+         WHERE EXISTS (
+             SELECT 1 FROM events
+             WHERE session_id = s.session_id AND event_type = 'SessionStart'
+         )
+         AND NOT EXISTS (
+             SELECT 1 FROM events
+             WHERE session_id = s.session_id AND event_type = 'SessionEnd'
+         )
+         ORDER BY s.last_seen DESC
+         LIMIT ?1",
+    )?;
+    let rows = stmt.query_map([limit], |row| {
+        Ok(crate::events::Session {
+            session_id: row.get(0)?,
+            first_seen: row.get(1)?,
+            last_seen: row.get(2)?,
+            event_count: row.get(3)?,
+            cwd: row.get(4)?,
+            model: row.get(5)?,
+        })
+    })?;
+    let mut sessions = Vec::new();
+    for row in rows {
+        sessions.push(row?);
+    }
+    Ok(sessions)
+}
+
+/// Find the tool name of the most recent `PreToolUse` event in a session that has no matching
+/// `PostToolUse` or `PostToolUseFailure` (by `tool_use_id`). Returns None when nothing is in flight.
+pub fn in_flight_tool(conn: &Connection, session_id: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT tool_name FROM events
+         WHERE session_id = ?1
+           AND event_type = 'PreToolUse'
+           AND tool_use_id IS NOT NULL
+           AND tool_use_id NOT IN (
+               SELECT tool_use_id FROM events
+               WHERE session_id = ?1
+                 AND event_type IN ('PostToolUse', 'PostToolUseFailure')
+                 AND tool_use_id IS NOT NULL
+           )
+         ORDER BY timestamp DESC
+         LIMIT 1",
+    )?;
+    let mut rows = stmt.query_map([session_id], |row| row.get::<_, Option<String>>(0))?;
+    match rows.next() {
+        Some(row) => Ok(row?),
+        None => Ok(None),
+    }
+}
+
 /// Get events for a session, optionally filtered by event type.
 pub fn session_events(
     conn: &Connection,

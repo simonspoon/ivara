@@ -41,6 +41,8 @@ fn run(command: cli::Commands) -> anyhow::Result<()> {
 
         cli::Commands::Sessions { json, limit } => commands::sessions::run(&conn, json, limit),
 
+        cli::Commands::Active { json, limit } => commands::active::run(&conn, json, limit),
+
         cli::Commands::Timeline {
             session,
             json,

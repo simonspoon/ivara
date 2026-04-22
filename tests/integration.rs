@@ -415,6 +415,169 @@ fn prune_deletes_old_data() {
     assert_eq!(sessions.len(), 0);
 }
 
+// ---- Active Sessions ----
+
+#[test]
+fn active_command_lists_started_but_not_ended() {
+    let env = TestEnv::new("active-basic");
+
+    // Live: SessionStart, no SessionEnd
+    env.capture(
+        r#"{"session_id":"live1","hook_event_name":"SessionStart","cwd":"/p","source":"cli","model":"opus"}"#,
+    );
+
+    // Dead: SessionStart + SessionEnd
+    env.capture(
+        r#"{"session_id":"dead1","hook_event_name":"SessionStart","cwd":"/p","model":"sonnet"}"#,
+    );
+    env.capture(
+        r#"{"session_id":"dead1","hook_event_name":"SessionEnd","cwd":"/p","reason":"user_exit"}"#,
+    );
+
+    let out = env.stdout(&["active", "--json"]);
+    let sessions: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0]["session_id"], "live1");
+    assert_eq!(sessions[0]["model"], "opus");
+}
+
+#[test]
+fn active_command_reports_in_flight_tool() {
+    let env = TestEnv::new("active-tool");
+
+    env.capture(r#"{"session_id":"live2","hook_event_name":"SessionStart","cwd":"/p"}"#);
+    // Completed tool call — pre + post matched by tool_use_id
+    env.capture(
+        r#"{"session_id":"live2","hook_event_name":"PreToolUse","cwd":"/p","tool_name":"Read","tool_use_id":"done"}"#,
+    );
+    env.capture(
+        r#"{"session_id":"live2","hook_event_name":"PostToolUse","cwd":"/p","tool_name":"Read","tool_response":"ok","tool_use_id":"done"}"#,
+    );
+    // In-flight tool call — pre without post
+    env.capture(
+        r#"{"session_id":"live2","hook_event_name":"PreToolUse","cwd":"/p","tool_name":"Bash","tool_use_id":"pending"}"#,
+    );
+
+    let out = env.stdout(&["active", "--json"]);
+    let sessions: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0]["tool"], "Bash");
+}
+
+#[test]
+fn active_command_blank_tool_when_no_in_flight() {
+    let env = TestEnv::new("active-no-tool");
+
+    env.capture(r#"{"session_id":"live3","hook_event_name":"SessionStart","cwd":"/p"}"#);
+    env.capture(
+        r#"{"session_id":"live3","hook_event_name":"PreToolUse","cwd":"/p","tool_name":"Bash","tool_use_id":"tu1"}"#,
+    );
+    env.capture(
+        r#"{"session_id":"live3","hook_event_name":"PostToolUse","cwd":"/p","tool_name":"Bash","tool_response":"ok","tool_use_id":"tu1"}"#,
+    );
+
+    let out = env.stdout(&["active", "--json"]);
+    let sessions: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert!(
+        sessions[0]["tool"].is_null(),
+        "expected null tool when nothing in flight, got {:?}",
+        sessions[0]["tool"]
+    );
+}
+
+#[test]
+fn active_command_post_tool_use_failure_counts_as_finalizer() {
+    let env = TestEnv::new("active-tool-fail");
+
+    env.capture(r#"{"session_id":"live4","hook_event_name":"SessionStart","cwd":"/p"}"#);
+    env.capture(
+        r#"{"session_id":"live4","hook_event_name":"PreToolUse","cwd":"/p","tool_name":"Bash","tool_use_id":"tu1"}"#,
+    );
+    env.capture(
+        r#"{"session_id":"live4","hook_event_name":"PostToolUseFailure","cwd":"/p","tool_name":"Bash","error":"x","tool_use_id":"tu1"}"#,
+    );
+
+    let out = env.stdout(&["active", "--json"]);
+    let sessions: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    assert!(sessions[0]["tool"].is_null());
+}
+
+#[test]
+fn active_command_empty_prints_one_line() {
+    let env = TestEnv::new("active-empty");
+
+    let out = env.run(&["active"]);
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("No active sessions"),
+        "stdout was: {}",
+        stdout
+    );
+}
+
+#[test]
+fn active_command_json_shape() {
+    let env = TestEnv::new("active-shape");
+
+    env.capture(
+        r#"{"session_id":"shape1","hook_event_name":"SessionStart","cwd":"/proj","model":"sonnet"}"#,
+    );
+
+    let out = env.stdout(&["active", "--json"]);
+    let sessions: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    assert_eq!(sessions.len(), 1);
+    let s = &sessions[0];
+    for key in &[
+        "session_id",
+        "last_seen",
+        "duration",
+        "event_count",
+        "cwd",
+        "idle",
+        "tool",
+        "model",
+    ] {
+        assert!(s.get(key).is_some(), "missing key: {}", key);
+    }
+    assert!(s["idle"].is_string());
+    assert_eq!(s["cwd"], "/proj");
+    assert_eq!(s["model"], "sonnet");
+}
+
+#[test]
+fn active_command_respects_limit() {
+    let env = TestEnv::new("active-limit");
+
+    for i in 0..5 {
+        let json = format!(
+            r#"{{"session_id":"limit{}","hook_event_name":"SessionStart","cwd":"/p"}}"#,
+            i
+        );
+        env.capture(&json);
+    }
+
+    let out = env.stdout(&["active", "--limit", "3", "--json"]);
+    let sessions: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    assert_eq!(sessions.len(), 3);
+}
+
+#[test]
+fn active_command_ignores_sessions_with_no_session_start() {
+    // Only captures that lack a SessionStart event should not appear.
+    let env = TestEnv::new("active-no-start");
+
+    // Pre-hook captured event — session exists in sessions table but no SessionStart row.
+    env.capture(
+        r#"{"session_id":"orphan","hook_event_name":"PreToolUse","cwd":"/p","tool_name":"Bash","tool_use_id":"t1"}"#,
+    );
+
+    let out = env.stdout(&["active", "--json"]);
+    let sessions: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap();
+    assert_eq!(sessions.len(), 0);
+}
+
 // ---- Concurrent Capture ----
 
 #[test]

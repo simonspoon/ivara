@@ -45,6 +45,16 @@ pub enum Commands {
         limit: i64,
     },
 
+    /// List currently-live sessions (SessionStart without SessionEnd)
+    Active {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Maximum results
+        #[arg(long, default_value = "20")]
+        limit: i64,
+    },
+
     /// Show chronological events for a session
     Timeline {
         /// Session ID (prefix match)
