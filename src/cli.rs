@@ -1,4 +1,6 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+
+use crate::commands::hooks::Scope as HookScope;
 
 #[derive(Parser)]
 #[command(
@@ -9,6 +11,23 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum ScopeArg {
+    /// User-level settings: ~/.claude/settings.json
+    User,
+    /// Project-level settings: <cwd>/.claude/settings.json
+    Project,
+}
+
+impl From<ScopeArg> for HookScope {
+    fn from(s: ScopeArg) -> Self {
+        match s {
+            ScopeArg::User => HookScope::User,
+            ScopeArg::Project => HookScope::Project,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -107,5 +126,35 @@ pub enum Commands {
     Export {
         /// Session ID (prefix match)
         session: String,
+    },
+
+    /// Install ivara hook wrapper + canonical event entries into Claude Code settings.json
+    InstallHooks {
+        /// Settings scope to install into
+        #[arg(long, value_enum, default_value_t = ScopeArg::User)]
+        scope: ScopeArg,
+    },
+
+    /// Remove ivara hook entries from Claude Code settings.json
+    UninstallHooks {
+        /// Settings scope to uninstall from
+        #[arg(long, value_enum, default_value_t = ScopeArg::User)]
+        scope: ScopeArg,
+    },
+
+    /// Report hook wiring status (wired vs missing per canonical event)
+    Hooks {
+        #[command(subcommand)]
+        action: HooksAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HooksAction {
+    /// Show which canonical events are currently wired in settings.json
+    Status {
+        /// Settings scope to inspect
+        #[arg(long, value_enum, default_value_t = ScopeArg::User)]
+        scope: ScopeArg,
     },
 }

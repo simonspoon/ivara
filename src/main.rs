@@ -11,15 +11,7 @@ use std::process;
 fn main() {
     let cli = cli::Cli::parse();
 
-    let conn = match db::connect() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Error: Failed to initialize database: {e}");
-            process::exit(1);
-        }
-    };
-
-    let result = run(cli.command, &conn);
+    let result = run(cli.command);
     if let Err(e) = result {
         let msg = e.to_string();
         if !msg.is_empty() {
@@ -29,19 +21,33 @@ fn main() {
     }
 }
 
-fn run(command: cli::Commands, conn: &rusqlite::Connection) -> anyhow::Result<()> {
+fn run(command: cli::Commands) -> anyhow::Result<()> {
+    // Hook lifecycle commands do not touch the telemetry DB.
     match command {
-        cli::Commands::Capture => commands::capture::run(conn),
+        cli::Commands::InstallHooks { scope } => return commands::hooks::install(scope.into()),
+        cli::Commands::UninstallHooks { scope } => return commands::hooks::uninstall(scope.into()),
+        cli::Commands::Hooks { action } => {
+            return match action {
+                cli::HooksAction::Status { scope } => commands::hooks::status(scope.into()),
+            };
+        }
+        _ => {}
+    }
 
-        cli::Commands::Sessions { json, limit } => commands::sessions::run(conn, json, limit),
+    let conn = db::connect().map_err(|e| anyhow::anyhow!("Failed to initialize database: {e}"))?;
+
+    match command {
+        cli::Commands::Capture => commands::capture::run(&conn),
+
+        cli::Commands::Sessions { json, limit } => commands::sessions::run(&conn, json, limit),
 
         cli::Commands::Timeline {
             session,
             json,
             event_type,
-        } => commands::query::timeline(conn, &session, json, event_type.as_deref()),
+        } => commands::query::timeline(&conn, &session, json, event_type.as_deref()),
 
-        cli::Commands::Show { event_id, json } => commands::query::show(conn, event_id, json),
+        cli::Commands::Show { event_id, json } => commands::query::show(&conn, event_id, json),
 
         cli::Commands::Query {
             event_type,
@@ -53,7 +59,7 @@ fn run(command: cli::Commands, conn: &rusqlite::Connection) -> anyhow::Result<()
             limit,
             json,
         } => commands::query::query(
-            conn,
+            &conn,
             event_type.as_deref(),
             tool.as_deref(),
             session.as_deref(),
@@ -65,17 +71,22 @@ fn run(command: cli::Commands, conn: &rusqlite::Connection) -> anyhow::Result<()
         ),
 
         cli::Commands::Stats { session, json } => {
-            commands::analysis::stats(conn, session.as_deref(), json)
+            commands::analysis::stats(&conn, session.as_deref(), json)
         }
 
         cli::Commands::Summary { session, json } => {
-            commands::analysis::summary(conn, &session, json)
+            commands::analysis::summary(&conn, &session, json)
         }
 
         cli::Commands::Prune { before, days } => {
-            commands::maintenance::prune(conn, before.as_deref(), days)
+            commands::maintenance::prune(&conn, before.as_deref(), days)
         }
 
-        cli::Commands::Export { session } => commands::maintenance::export(conn, &session),
+        cli::Commands::Export { session } => commands::maintenance::export(&conn, &session),
+
+        // Hook commands already handled above.
+        cli::Commands::InstallHooks { .. }
+        | cli::Commands::UninstallHooks { .. }
+        | cli::Commands::Hooks { .. } => unreachable!("handled before db connect"),
     }
 }
