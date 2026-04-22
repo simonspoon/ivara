@@ -578,6 +578,138 @@ fn active_command_ignores_sessions_with_no_session_start() {
     assert_eq!(sessions.len(), 0);
 }
 
+// ---- Stream ----
+
+#[test]
+fn stream_replays_and_tails_to_session_end() {
+    use std::io::{BufRead, BufReader};
+    use std::time::Duration;
+
+    let env = TestEnv::new("stream-basic");
+
+    // Seed two events before starting stream — they should appear in the replay phase.
+    env.capture(
+        r#"{"session_id":"stream1","hook_event_name":"SessionStart","cwd":"/p","source":"cli","model":"opus"}"#,
+    );
+    env.capture(
+        r#"{"session_id":"stream1","hook_event_name":"UserPromptSubmit","cwd":"/p","prompt":"hi"}"#,
+    );
+
+    // Spawn `ivara stream` with stdout piped.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ivara"))
+        .args(["stream", "stream1"])
+        .env("IVARA_HOME", &env.dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn ivara stream");
+
+    let stdout = child.stdout.take().expect("stdout pipe");
+    let reader = BufReader::new(stdout);
+
+    // Background thread writes a third event mid-stream, then SessionEnd to terminate.
+    let dir = env.dir.clone();
+    let writer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(500));
+
+        let mut c = Command::new(env!("CARGO_BIN_EXE_ivara"))
+            .args(["capture"])
+            .env("IVARA_HOME", &dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn mid capture");
+        use std::io::Write;
+        c.stdin
+            .take()
+            .unwrap()
+            .write_all(
+                br#"{"session_id":"stream1","hook_event_name":"PreToolUse","cwd":"/p","tool_name":"Bash","tool_use_id":"tu1"}"#,
+            )
+            .unwrap();
+        c.wait_with_output().unwrap();
+
+        std::thread::sleep(Duration::from_millis(500));
+
+        let mut c = Command::new(env!("CARGO_BIN_EXE_ivara"))
+            .args(["capture"])
+            .env("IVARA_HOME", &dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn end capture");
+        c.stdin
+            .take()
+            .unwrap()
+            .write_all(
+                br#"{"session_id":"stream1","hook_event_name":"SessionEnd","cwd":"/p","reason":"user_exit"}"#,
+            )
+            .unwrap();
+        c.wait_with_output().unwrap();
+    });
+
+    // Read every line from the stream until the process exits. Each line = one event JSON.
+    let mut lines: Vec<String> = Vec::new();
+    for line in reader.lines() {
+        let l = line.expect("read stream line");
+        lines.push(l);
+    }
+
+    writer.join().expect("writer thread panicked");
+    let status = child.wait().expect("wait on stream process");
+
+    assert!(status.success(), "stream exited non-zero: {status}");
+    assert_eq!(lines.len(), 4, "expected 4 JSONL lines, got: {lines:?}");
+
+    // Each line parses as JSON and carries the required fields.
+    let parsed: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|l| serde_json::from_str(l).expect("line is JSON"))
+        .collect();
+
+    let types: Vec<&str> = parsed
+        .iter()
+        .map(|v| v["event_type"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        vec![
+            "SessionStart",
+            "UserPromptSubmit",
+            "PreToolUse",
+            "SessionEnd",
+        ]
+    );
+
+    // Payload must be inlined on every line — same shape as `ivara export`.
+    for v in &parsed {
+        assert!(
+            v.get("payload").is_some(),
+            "missing payload on stream line: {v}"
+        );
+        assert!(v.get("session_id").is_some());
+        assert_eq!(v["session_id"], "stream1");
+    }
+}
+
+#[test]
+fn stream_unknown_session_exits_error() {
+    let env = TestEnv::new("stream-unknown");
+
+    let out = env.run(&["stream", "nope"]);
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit for unknown session"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("No session matching"),
+        "stderr was: {stderr}"
+    );
+}
+
 // ---- Concurrent Capture ----
 
 #[test]

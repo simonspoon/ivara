@@ -231,6 +231,27 @@ pub fn session_events(
     Ok(events)
 }
 
+/// Get events for a session with `id > after_id`, ordered by `id ASC`.
+///
+/// Used by `ivara stream` to poll for new events after initial replay. Prefix resolution
+/// must happen before calling this — pass the full `session_id` (exact match).
+pub fn session_events_after_id(
+    conn: &Connection,
+    session_id: &str,
+    after_id: i64,
+) -> Result<Vec<crate::events::Event>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, event_uuid, session_id, event_type, timestamp, tool_name, tool_use_id, cwd, payload_path, metadata_json
+         FROM events WHERE session_id = ?1 AND id > ?2 ORDER BY id ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![session_id, after_id], map_event_row)?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row?);
+    }
+    Ok(events)
+}
+
 /// Get a single event by ID.
 pub fn get_event(conn: &Connection, event_id: i64) -> Result<Option<crate::events::Event>> {
     let mut stmt = conn.prepare(

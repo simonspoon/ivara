@@ -1,6 +1,6 @@
 # Commands Reference
 
-ivara provides 10 commands for capturing, querying, and managing Claude Code session data.
+ivara provides 11 commands for capturing, querying, and managing Claude Code session data.
 
 All commands that produce tabular output support a `--json` flag for machine-readable JSON output.
 
@@ -254,6 +254,32 @@ ivara export abc > session.json
 
 Outputs a JSON array to stdout where each element is an event object with an additional `payload` field containing the parsed event data. For file-backed payloads, the file content is read and inlined. For inline payloads, `metadata_json` is parsed and included.
 
+## stream
+
+Stream a session's events as newline-delimited JSON (JSONL). Replays every existing event for the session in timestamp order, then tails new events as they are captured. Designed for piping live Claude Code activity into other tools.
+
+```bash
+ivara stream abc
+ivara stream abc | jq 'select(.event_type == "PreToolUse")'
+```
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `session` | string | yes | Session ID (prefix match). |
+
+No flags. Each stdout line is one JSON object with the same shape as a single element of `ivara export` output: all `Event` columns plus an inlined `payload` field (from the on-disk payload file, or the parsed inline `metadata_json`). Stdout is flushed after every line so consumers see events promptly.
+
+Exit conditions:
+
+| Trigger | Exit code |
+|---------|-----------|
+| A `SessionEnd` event for the session is emitted | `0` |
+| SIGINT (Ctrl-C) | `0` |
+| Consumer closes the pipe (BrokenPipe) | `0` |
+| Unknown session prefix | `1` (error to stderr) |
+
+New events are polled from the database at a fixed 250ms interval. The command does not support multi-session streaming, filtering flags, or replay-only mode — use `ivara export` for one-shot replay or `ivara query` / `ivara timeline` for filtering.
+
 ## Source References
 
 - CLI definition (all commands and flags): `src/cli.rs`
@@ -263,4 +289,5 @@ Outputs a JSON array to stdout where each element is an event object with an add
 - Timeline, show, query: `src/commands/query.rs`
 - Stats, summary: `src/commands/analysis.rs`
 - Prune, export: `src/commands/maintenance.rs`
+- Stream: `src/commands/stream.rs`
 - Query engine (filter building, time parsing): `src/query.rs`

@@ -138,6 +138,12 @@ pub enum Commands {
         session: String,
     },
 
+    /// Stream session events as JSONL (replay + tail until SessionEnd)
+    Stream {
+        /// Session ID (prefix match)
+        session: String,
+    },
+
     /// Install ivara hook wrapper + canonical event entries into Claude Code settings.json
     InstallHooks {
         /// Settings scope to install into

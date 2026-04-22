@@ -86,6 +86,8 @@ fn run(command: cli::Commands) -> anyhow::Result<()> {
 
         cli::Commands::Export { session } => commands::maintenance::export(&conn, &session),
 
+        cli::Commands::Stream { session } => commands::stream::run(&conn, &session),
+
         // Hook commands already handled above.
         cli::Commands::InstallHooks { .. }
         | cli::Commands::UninstallHooks { .. }

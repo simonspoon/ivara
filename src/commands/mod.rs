@@ -5,3 +5,4 @@ pub mod hooks;
 pub mod maintenance;
 pub mod query;
 pub mod sessions;
+pub mod stream;
