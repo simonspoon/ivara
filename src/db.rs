@@ -46,6 +46,7 @@ fn initialize(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
         CREATE INDEX IF NOT EXISTS idx_events_tool_name ON events(tool_name);
         CREATE INDEX IF NOT EXISTS idx_events_tool_use_id ON events(tool_use_id);
+        CREATE INDEX IF NOT EXISTS idx_events_session_type ON events(session_id, event_type);
 
         CREATE TABLE IF NOT EXISTS sessions (
             session_id TEXT PRIMARY KEY,
