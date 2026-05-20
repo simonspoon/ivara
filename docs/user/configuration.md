@@ -1,12 +1,13 @@
 # Configuration
 
-ivara uses convention-over-configuration. There are no config files -- behavior is controlled through one environment variable and compile-time constants.
+ivara uses convention-over-configuration. There are no config files -- behavior is controlled through two environment variables and compile-time constants.
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `IVARA_HOME` | `~/.ivara` | Root directory for all ivara data (database and payload files). |
+| `IVARA_HOOKS_HOME` | `~` | Home directory used by `install-hooks` / `uninstall-hooks` / `hooks status` to locate `<home>/.claude/settings.json` at `user` scope. Does not affect the telemetry data directory. |
 
 Set `IVARA_HOME` to relocate the data directory:
 
@@ -17,11 +18,13 @@ ivara sessions   # reads from /custom/path/ivara.db
 
 This is also used by the test infrastructure to isolate test runs (see [contributing.md](../dev/contributing.md)).
 
+`IVARA_HOOKS_HOME` only affects the hook-management commands at `user` scope: instead of `~/.claude`, they resolve settings and the wrapper script under `$IVARA_HOOKS_HOME/.claude`. It is mainly used to isolate hook-install tests; `project`-scope commands ignore it and always target `<cwd>/.claude`.
+
 ## Data Directory Layout
 
 ```
 $IVARA_HOME/              # defaults to ~/.ivara/
-  ivara.db                # SQLite database (events + sessions tables)
+  ivara.db                # SQLite database (events, sessions, session_usage tables)
   payloads/               # file-backed payloads for large events
     <session_id>/         # one subdirectory per session
       <event_uuid>.json   # full JSON payload from capture

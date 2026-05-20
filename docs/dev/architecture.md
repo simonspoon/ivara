@@ -8,13 +8,16 @@ ivara is a single-crate Rust CLI. All source lives under `src/`.
 
 | Module | File | Responsibility |
 |--------|------|----------------|
-| `cli` | `src/cli.rs` | CLI definition via clap derive. Defines `Cli` struct and `Commands` enum (9 variants). |
+| `cli` | `src/cli.rs` | CLI definition via clap derive. Defines `Cli` struct and `Commands` enum (15 variants). |
 | `commands` | `src/commands/mod.rs` | Command implementations, split into submodules. |
 | `commands::capture` | `src/commands/capture.rs` | Stdin JSON ingestion pipeline. |
 | `commands::sessions` | `src/commands/sessions.rs` | List sessions with duration and event count. |
+| `commands::active` | `src/commands/active.rs` | List currently-live sessions with idle time, in-flight tool, and model. |
 | `commands::query` | `src/commands/query.rs` | Timeline, show, and filtered query output. |
 | `commands::analysis` | `src/commands/analysis.rs` | Stats and summary generation. |
 | `commands::maintenance` | `src/commands/maintenance.rs` | Prune old data and export sessions. |
+| `commands::stream` | `src/commands/stream.rs` | Replay + tail a session's events as JSONL. |
+| `commands::hooks` | `src/commands/hooks.rs` | Self-install hook wiring into Claude Code `settings.json` (no DB access). |
 | `commands::usage` | `src/commands/usage.rs` | `backfill-usage` — parse transcripts to fill the `session_usage` table. |
 | `db` | `src/db.rs` | SQLite connection, schema DDL, all database operations. |
 | `events` | `src/events.rs` | Type definitions: `EventType` (25 variants), `Event`, `Session`, `HookInput`. |
@@ -24,13 +27,13 @@ ivara is a single-crate Rust CLI. All source lives under `src/`.
 
 ## Entry Point
 
-`src/main.rs` does three things:
+`src/main.rs` is small:
 
-1. Parses CLI arguments via `cli::Cli::parse()` (clap).
-2. Opens the SQLite connection via `db::connect()` (creates data dir and runs schema DDL if needed).
-3. Dispatches to the matching command handler via `run(command, &conn)`.
+1. `main()` parses CLI arguments via `cli::Cli::parse()` (clap), then calls `run(cli.command)`.
+2. `run()` first short-circuits the **hook lifecycle commands** (`install-hooks`, `uninstall-hooks`, `hooks status`) — these manage Claude Code's `settings.json` and never touch the telemetry database, so they return before any connection is opened.
+3. For every other command, `run()` opens the SQLite connection via `db::connect()` (creates the data dir and runs schema DDL if needed), then dispatches to the matching handler.
 
-All command handlers receive a `&rusqlite::Connection` and return `anyhow::Result<()>`. Errors are printed to stderr prefixed with "Error:" and exit with code 1.
+Database-backed handlers receive a `&rusqlite::Connection`; hook handlers receive a `commands::hooks::Scope` instead. Every handler returns `anyhow::Result<()>`. The `main()` function catches errors, prints them to stderr prefixed with "Error:", and exits with code 1.
 
 ## Data Flow: Capture Pipeline
 
@@ -104,17 +107,21 @@ main.rs
   +-> commands/
         capture  --> events, storage, db, usage
         sessions --> db
+        active   --> db, events
         query    --> db, storage, query (engine)
         analysis --> db, query, sessions (format_duration_secs)
         maintenance --> db, storage
+        stream   --> db, maintenance (event_to_export_value)
+        hooks    --> (filesystem only; no db)
         usage    --> db, usage
 ```
 
 Key points:
-- `db` and `storage` are the only modules with filesystem side effects.
+- `db` and `storage` are the only modules with telemetry-filesystem side effects; `commands::hooks` has its own filesystem side effects, but on Claude Code's `settings.json` and hook-scripts, not the ivara data dir.
 - `events` is a pure data module (types only, no I/O).
 - `query` (the engine) builds dynamic SQL; `commands::query` handles CLI output formatting.
 - `commands::analysis` reuses `format_duration_secs` from `commands::sessions`.
+- `commands::stream` reuses `event_to_export_value` from `commands::maintenance` so streamed and exported events share one shape.
 
 ## Concurrency Model
 
@@ -129,6 +136,7 @@ All functions return `anyhow::Result`. The `main()` function catches errors, pri
 - Entry point and dispatch: `src/main.rs`
 - CLI definition: `src/cli.rs`
 - Capture pipeline: `src/commands/capture.rs`
+- Hook self-install: `src/commands/hooks.rs`
 - Database layer: `src/db.rs`
 - Query engine: `src/query.rs`
 - Payload storage: `src/storage.rs`

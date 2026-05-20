@@ -37,22 +37,40 @@ mv ivara-darwin-arm64 /usr/local/bin/ivara
 
 ## Claude Code Hook Configuration
 
-ivara captures events by running as a Claude Code hook. Add it to your Claude Code settings (`.claude/settings.json` in your project or `~/.claude/settings.json` globally):
+ivara captures events by running as a Claude Code hook. The fastest way to wire it up is the built-in installer:
+
+```bash
+ivara install-hooks                  # user scope: ~/.claude/settings.json
+ivara install-hooks --scope project  # project scope: <cwd>/.claude/settings.json
+```
+
+`install-hooks` writes a capture wrapper script to `<.claude>/hook-scripts/ivara-capture.sh` and merges hook entries for all 25 canonical events into `settings.json`. The merge is append-only and idempotent — it never clobbers other tools' hooks, and any existing `settings.json` is backed up to `settings.json.bak` first.
+
+Check the wiring at any time with `ivara hooks status`, and remove it with `ivara uninstall-hooks`. See [commands.md](commands.md) for details on all three.
+
+### Manual configuration
+
+To wire hooks by hand instead, add entries to `.claude/settings.json` (project) or `~/.claude/settings.json` (user). Each event maps to an array of matcher groups, and each group holds the hook commands:
 
 ```json
 {
   "hooks": {
-    "PreToolUse": [{ "type": "command", "command": "ivara capture" }],
-    "PostToolUse": [{ "type": "command", "command": "ivara capture" }],
-    "PostToolUseFailure": [{ "type": "command", "command": "ivara capture" }],
-    "Stop": [{ "type": "command", "command": "ivara capture" }],
-    "StopFailure": [{ "type": "command", "command": "ivara capture" }],
-    "SessionStart": [{ "type": "command", "command": "ivara capture" }],
-    "SessionEnd": [{ "type": "command", "command": "ivara capture" }],
-    "SubagentStart": [{ "type": "command", "command": "ivara capture" }],
-    "SubagentStop": [{ "type": "command", "command": "ivara capture" }],
-    "UserPromptSubmit": [{ "type": "command", "command": "ivara capture" }],
-    "Notification": [{ "type": "command", "command": "ivara capture" }]
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "ivara capture", "timeout": 5 }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "ivara capture", "timeout": 5 }
+        ]
+      }
+    ]
   }
 }
 ```
@@ -119,6 +137,6 @@ See [configuration.md](configuration.md) for full configuration details.
 
 ## Next Steps
 
-- [Commands Reference](commands.md) -- all 9 commands with flags and examples.
+- [Commands Reference](commands.md) -- all 15 commands with flags and examples.
 - [Configuration](configuration.md) -- environment variables, data layout, and tuning.
 - [Architecture](../dev/architecture.md) -- internal design and data flow.

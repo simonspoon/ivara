@@ -1,6 +1,6 @@
 # Commands Reference
 
-ivara provides 12 commands for capturing, querying, and managing Claude Code session data.
+ivara provides 15 commands for capturing, querying, managing, and wiring up Claude Code session data.
 
 All commands that produce tabular output support a `--json` flag for machine-readable JSON output.
 
@@ -295,6 +295,55 @@ Exit conditions:
 
 New events are polled from the database at a fixed 250ms interval. The command does not support multi-session streaming, filtering flags, or replay-only mode — use `ivara export` for one-shot replay or `ivara query` / `ivara timeline` for filtering.
 
+## install-hooks
+
+Wire ivara into Claude Code's hooks without hand-editing `settings.json`. Writes the capture wrapper script to disk and merges entries for all 25 canonical events into `settings.json`.
+
+```bash
+ivara install-hooks
+ivara install-hooks --scope project
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--scope` | `user` \| `project` | `user` | Which `settings.json` to install into. `user` targets `~/.claude/settings.json`; `project` targets `<cwd>/.claude/settings.json`. |
+
+The wrapper script is written to `<.claude>/hook-scripts/ivara-capture.sh` (made executable on Unix), and each canonical event gets a `bash <wrapper-path>` hook entry with a 5-second timeout.
+
+The merge is **append-only and idempotent**: it never clobbers other tools' hook entries, and re-running it makes no changes once ivara is already wired. Before writing, any existing `settings.json` is copied to `settings.json.bak`.
+
+Output reports the wrapper path, the settings path, and the number of events wired.
+
+## uninstall-hooks
+
+Remove ivara's hook entries from Claude Code's `settings.json`.
+
+```bash
+ivara uninstall-hooks
+ivara uninstall-hooks --scope project
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--scope` | `user` \| `project` | `user` | Which `settings.json` to uninstall from. |
+
+Only hook entries whose `command` matches ivara's wrapper path are removed; other tools' entries are preserved. Empty matcher groups and event keys left behind are pruned. The wrapper script on disk is left in place. If no `settings.json` exists at the target path, the command prints a notice and exits 0. Output reports the count of entries removed.
+
+## hooks
+
+Inspect ivara's hook wiring. `hooks` is a parent command with one subcommand, `status`.
+
+```bash
+ivara hooks status
+ivara hooks status --scope project
+```
+
+| Subcommand | Flag | Type | Default | Description |
+|------------|------|------|---------|-------------|
+| `status` | `--scope` | `user` \| `project` | `user` | Which `settings.json` to inspect. |
+
+`hooks status` reports, per canonical event, whether an ivara hook entry is wired (`ok`) or missing (`--`), along with a `wired: N/25` summary. If `settings.json` contains an ivara entry for an event **not** in ivara's canonical list, it is flagged under "unknown events" — a signal that the binary's event list and the on-disk config have drifted.
+
 ## backfill-usage
 
 Backfill token usage by parsing session transcripts.
@@ -329,6 +378,7 @@ Token usage is then visible via `ivara stats` and `ivara summary`.
 - Stats, summary: `src/commands/analysis.rs`
 - Prune, export: `src/commands/maintenance.rs`
 - Stream: `src/commands/stream.rs`
+- Install-hooks, uninstall-hooks, hooks status: `src/commands/hooks.rs`
 - Backfill usage: `src/commands/usage.rs`
 - Transcript token-usage parser: `src/usage.rs`
 - Query engine (filter building, time parsing): `src/query.rs`
