@@ -25,7 +25,9 @@ cargo test -- <test_name>   # run a specific test
 
 ### Test Infrastructure
 
-Integration tests live in `tests/integration.rs` and use a `TestEnv` helper struct that isolates each test with its own data directory.
+Integration tests live in two files. `tests/integration.rs` covers the telemetry commands and uses a `TestEnv` helper struct that isolates each test with its own data directory. `tests/hooks_install.rs` covers `install-hooks` / `uninstall-hooks` / `hooks status` with its own harness that points `IVARA_HOOKS_HOME` at a temp dir, so a real `~/.claude` is never touched.
+
+The `TestEnv` struct below is the harness for `tests/integration.rs`.
 
 ```rust
 struct TestEnv {
@@ -56,9 +58,12 @@ Key `TestEnv` methods:
 | Session prefix | `session_prefix_matching` | Prefix-based session ID lookup works. |
 | Stats/summary | `stats_global_and_per_session`, `summary_output` | Aggregation and narrative output are correct. |
 | Export | `export_session` | Full session export inlines payloads. |
+| Active sessions | `active_command_*` (8 tests) | Live-session detection, in-flight tool, idle time, JSON shape, and `--limit`. |
+| Stream | `stream_replays_and_tails_to_session_end`, `stream_unknown_session_exits_error` | JSONL replay-then-tail to `SessionEnd`, and unknown-session error exit. |
 | Prune | `prune_deletes_old_data` | Data deletion works including orphan cleanup. |
 | Concurrency | `concurrent_capture` | 10 parallel captures don't conflict (WAL mode). |
 | Error handling | `capture_rejects_invalid_json`, `capture_rejects_unknown_event` | Invalid input exits with non-zero status. |
+| Hook install | `install_*`, `hooks_status_*` (6 tests in `tests/hooks_install.rs`) | Wrapper + all 25 entries written, idempotency, roundtrip preserves other tools' hooks, `settings.json.bak` backup, status reporting. |
 
 ### Writing New Tests
 
@@ -132,7 +137,7 @@ Releases are triggered by pushing a version tag (e.g., `git tag v0.2.0 && git pu
 1. Add a variant to the `Commands` enum in `src/cli.rs` with clap attributes for args and help text.
 2. Create or extend a command module in `src/commands/`. Follow the existing pattern: accept `&Connection`, return `Result<()>`, support `--json` where appropriate.
 3. Add a match arm in the `run()` function in `src/main.rs`.
-4. Write integration tests in `tests/integration.rs` using `TestEnv`.
+4. Write integration tests in `tests/integration.rs` using `TestEnv` (or `tests/hooks_install.rs` for hook-management commands).
 
 ## Adding a New Event Type
 
@@ -149,6 +154,6 @@ Releases are triggered by pushing a version tag (e.g., `git tag v0.2.0 && git pu
 - CLI definition: `src/cli.rs`
 - Command dispatch: `src/main.rs` (`run()`)
 - Event types: `src/events.rs`
-- Integration tests: `tests/integration.rs`
+- Integration tests: `tests/integration.rs` (telemetry commands), `tests/hooks_install.rs` (hook self-install)
 - CI workflow: `.github/workflows/ci.yml`
 - Release workflow: `.github/workflows/release.yml`
