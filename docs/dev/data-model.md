@@ -30,6 +30,9 @@ ivara uses SQLite with two tables. Schema DDL is in `src/db.rs` (`initialize()` 
 | `idx_events_timestamp` | `timestamp` |
 | `idx_events_tool_name` | `tool_name` |
 | `idx_events_tool_use_id` | `tool_use_id` |
+| `idx_events_session_type` | `session_id, event_type` |
+
+The composite `idx_events_session_type` is required for `list_active_sessions` and `in_flight_tool` in `src/db.rs`, which both filter events by `(session_id, event_type)`. Without it, the planner picks `idx_events_type` and re-scans every SessionStart/SessionEnd row per session -- on a 235k-event DB this turned `ivara active` into a ~129s outer query. With the composite index both subqueries become O(log n) lookups (outer query 129s -> 0.03s; `ivara active --json --limit 200` runs in ~41ms). When adding new query paths that filter on multiple event columns, check the EXPLAIN QUERY PLAN before relying on single-column indexes.
 
 ### sessions
 
