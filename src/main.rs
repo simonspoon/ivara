@@ -4,6 +4,7 @@ mod db;
 mod events;
 mod query;
 mod storage;
+mod usage;
 
 use clap::Parser;
 use std::process;
@@ -87,6 +88,10 @@ fn run(command: cli::Commands) -> anyhow::Result<()> {
         cli::Commands::Export { session } => commands::maintenance::export(&conn, &session),
 
         cli::Commands::Stream { session } => commands::stream::run(&conn, &session),
+
+        cli::Commands::BackfillUsage { session, force } => {
+            commands::usage::backfill(&conn, session.as_deref(), force)
+        }
 
         // Hook commands already handled above.
         cli::Commands::InstallHooks { .. }

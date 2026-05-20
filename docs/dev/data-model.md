@@ -4,7 +4,7 @@ This document describes the database schema, Rust type definitions, and payload 
 
 ## Database Schema
 
-ivara uses SQLite with two tables. Schema DDL is in `src/db.rs` (`initialize()` function) and runs on every connection via `CREATE TABLE IF NOT EXISTS`.
+ivara uses SQLite with three tables. Schema DDL is in `src/db.rs` (`initialize()` function) and runs on every connection via `CREATE TABLE IF NOT EXISTS` — there is no migration framework, so new tables are picked up automatically on the next connect.
 
 ### events
 
@@ -47,9 +47,33 @@ The composite `idx_events_session_type` is required for `list_active_sessions` a
 
 The sessions table is maintained via upsert (`INSERT ... ON CONFLICT DO UPDATE`). On each new event, `last_seen` is updated to the max of existing and new timestamp, `event_count` is incremented, and `cwd`/`model` are filled via `COALESCE` (first non-null wins).
 
+### session_usage
+
+Aggregated token usage per session, derived by parsing the session's transcript JSONL file. Hook events carry no token counts, so this table is the only place token usage is recorded.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| `session_id` | `TEXT` | `PRIMARY KEY` | Claude Code session identifier. |
+| `model` | `TEXT` | nullable | Model driving the most API calls in the transcript. |
+| `input_tokens` | `INTEGER` | `NOT NULL DEFAULT 0` | Sum of `input_tokens` across all assistant messages. |
+| `output_tokens` | `INTEGER` | `NOT NULL DEFAULT 0` | Sum of `output_tokens`. |
+| `cache_creation_tokens` | `INTEGER` | `NOT NULL DEFAULT 0` | Sum of `cache_creation_input_tokens`. |
+| `cache_read_tokens` | `INTEGER` | `NOT NULL DEFAULT 0` | Sum of `cache_read_input_tokens`. |
+| `web_search_requests` | `INTEGER` | `NOT NULL DEFAULT 0` | Sum of `server_tool_use.web_search_requests`. |
+| `web_fetch_requests` | `INTEGER` | `NOT NULL DEFAULT 0` | Sum of `server_tool_use.web_fetch_requests`. |
+| `api_calls` | `INTEGER` | `NOT NULL DEFAULT 0` | Count of assistant messages (API requests) counted. |
+| `parsed_at` | `TEXT` | `NOT NULL` | RFC 3339 timestamp of the parse that produced this row. |
+
+Rows are written via `INSERT OR REPLACE` (`db::upsert_session_usage`) — a full overwrite, because re-parsing a transcript always yields the complete picture. Population happens two ways:
+
+1. **Automatically** — `commands::capture` parses the transcript when a `SessionEnd` event arrives. This is best-effort: a missing or malformed transcript never fails the capture.
+2. **On demand** — `ivara backfill-usage` (`commands::usage`) parses transcripts for historical sessions or ones whose `SessionEnd` never fired.
+
+Each value is a sum over per-API-call `usage` blocks. `input_tokens` therefore intentionally counts the same context repeatedly — every API call is billed for its full input — so it is a billing figure, not the context size. `prune` deletes `session_usage` rows whose session no longer has any events.
+
 ## Rust Types
 
-All types are defined in `src/events.rs`.
+Core types are defined in `src/events.rs`; the token-usage type (`SessionUsage`) is in `src/usage.rs`.
 
 ### EventType (enum, 25 variants)
 
@@ -149,6 +173,26 @@ Key methods on `HookInput`:
 - `metadata() -> serde_json::Value` -- build a metadata object with only small fields (excludes `tool_input`, `tool_response`, `last_assistant_message`).
 - `payload_size() -> usize` -- estimate serialized size for threshold comparison.
 
+### SessionUsage (struct)
+
+Aggregated token usage for one session. Defined in `src/usage.rs`. Mirrors the `session_usage` table columns (minus `session_id` and `parsed_at`).
+
+```rust
+pub struct SessionUsage {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub web_search_requests: i64,
+    pub web_fetch_requests: i64,
+    pub api_calls: i64,
+    pub model: Option<String>,
+}
+```
+
+- `parse_transcript(&Path) -> Result<SessionUsage>` -- read a transcript JSONL file and sum usage across every assistant message. Non-assistant entries, synthetic entries (model `<synthetic>`), duplicate entry uuids, and unparseable lines are skipped.
+- `total_tokens(&self) -> i64` -- `input + output + cache_creation + cache_read`.
+
 ## Payload Storage Strategy
 
 Events are stored differently based on size, controlled by `PAYLOAD_THRESHOLD` (4096 bytes) in `src/storage.rs`.
@@ -176,3 +220,5 @@ The `metadata()` method extracts only small scalar fields from `HookInput`, excl
 - Type definitions and HookInput: `src/events.rs`
 - Payload storage functions: `src/storage.rs`
 - Capture pipeline (where storage decisions happen): `src/commands/capture.rs`
+- Transcript token-usage parser and `SessionUsage`: `src/usage.rs`
+- Backfill command: `src/commands/usage.rs`

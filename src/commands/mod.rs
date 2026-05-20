@@ -6,3 +6,4 @@ pub mod maintenance;
 pub mod query;
 pub mod sessions;
 pub mod stream;
+pub mod usage;

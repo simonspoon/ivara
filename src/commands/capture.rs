@@ -3,7 +3,7 @@ use chrono::Utc;
 use rusqlite::Connection;
 use std::io::Read;
 
-use crate::events::HookInput;
+use crate::events::{EventType, HookInput};
 use crate::storage;
 
 /// Read stdin JSON and store the event. Must be fast — hooks block on this.
@@ -49,6 +49,17 @@ pub fn run(conn: &Connection) -> Result<()> {
         hook.cwd.as_deref(),
         hook.model.as_deref(),
     )?;
+
+    // On session end, parse the transcript for token usage. Best-effort: a
+    // missing or malformed transcript must never fail the capture itself.
+    if matches!(event_type, EventType::SessionEnd) {
+        if let Some(ref transcript_path) = hook.transcript_path {
+            let path = std::path::Path::new(transcript_path);
+            if let Ok(usage) = crate::usage::parse_transcript(path) {
+                let _ = crate::db::upsert_session_usage(conn, &hook.session_id, &usage);
+            }
+        }
+    }
 
     Ok(())
 }

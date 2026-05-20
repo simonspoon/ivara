@@ -56,6 +56,19 @@ fn initialize(conn: &Connection) -> Result<()> {
             cwd TEXT,
             model TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS session_usage (
+            session_id TEXT PRIMARY KEY,
+            model TEXT,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            web_search_requests INTEGER NOT NULL DEFAULT 0,
+            web_fetch_requests INTEGER NOT NULL DEFAULT 0,
+            api_calls INTEGER NOT NULL DEFAULT 0,
+            parsed_at TEXT NOT NULL
+        );
         ",
     )?;
     Ok(())
@@ -285,7 +298,132 @@ pub fn prune_before(conn: &Connection, before: &str) -> Result<usize> {
         "DELETE FROM sessions WHERE session_id NOT IN (SELECT DISTINCT session_id FROM events)",
         [],
     )?;
+    conn.execute(
+        "DELETE FROM session_usage WHERE session_id NOT IN (SELECT DISTINCT session_id FROM events)",
+        [],
+    )?;
     Ok(count)
+}
+
+/// Insert or replace the token-usage row for a session.
+///
+/// A full overwrite is correct: re-parsing a transcript always yields the
+/// complete usage picture, so the latest parse supersedes any prior row.
+pub fn upsert_session_usage(
+    conn: &Connection,
+    session_id: &str,
+    usage: &crate::usage::SessionUsage,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO session_usage
+         (session_id, model, input_tokens, output_tokens, cache_creation_tokens,
+          cache_read_tokens, web_search_requests, web_fetch_requests, api_calls, parsed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            session_id,
+            usage.model,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_creation_tokens,
+            usage.cache_read_tokens,
+            usage.web_search_requests,
+            usage.web_fetch_requests,
+            usage.api_calls,
+            chrono::Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Get stored token usage for a single session. Returns None when the session
+/// has no usage row yet (not captured at SessionEnd, not backfilled).
+pub fn get_session_usage(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<crate::usage::SessionUsage>> {
+    let mut stmt = conn.prepare(
+        "SELECT model, input_tokens, output_tokens, cache_creation_tokens,
+                cache_read_tokens, web_search_requests, web_fetch_requests, api_calls
+         FROM session_usage WHERE session_id = ?1",
+    )?;
+    let mut rows = stmt.query_map([session_id], map_usage_row)?;
+    match rows.next() {
+        Some(row) => Ok(Some(row?)),
+        None => Ok(None),
+    }
+}
+
+/// Sum token usage across every session. Returns None when no usage has been
+/// recorded at all, so callers can distinguish "zero" from "unknown".
+pub fn total_usage(conn: &Connection) -> Result<Option<crate::usage::SessionUsage>> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM session_usage", [], |row| row.get(0))?;
+    if count == 0 {
+        return Ok(None);
+    }
+    let usage = conn.query_row(
+        "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(cache_creation_tokens), 0), COALESCE(SUM(cache_read_tokens), 0),
+                COALESCE(SUM(web_search_requests), 0), COALESCE(SUM(web_fetch_requests), 0),
+                COALESCE(SUM(api_calls), 0)
+         FROM session_usage",
+        [],
+        |row| {
+            Ok(crate::usage::SessionUsage {
+                model: None,
+                input_tokens: row.get(0)?,
+                output_tokens: row.get(1)?,
+                cache_creation_tokens: row.get(2)?,
+                cache_read_tokens: row.get(3)?,
+                web_search_requests: row.get(4)?,
+                web_fetch_requests: row.get(5)?,
+                api_calls: row.get(6)?,
+            })
+        },
+    )?;
+    Ok(Some(usage))
+}
+
+/// Find a transcript path recorded for a session. Claude Code includes
+/// `transcript_path` in the payload of essentially every hook event, so this
+/// works even when the `SessionEnd` hook was never wired.
+pub fn session_transcript_path(conn: &Connection, session_id: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT json_extract(metadata_json, '$.transcript_path')
+         FROM events
+         WHERE session_id = ?1
+           AND metadata_json IS NOT NULL
+           AND json_extract(metadata_json, '$.transcript_path') IS NOT NULL
+         LIMIT 1",
+    )?;
+    let mut rows = stmt.query_map([session_id], |row| row.get::<_, Option<String>>(0))?;
+    match rows.next() {
+        Some(row) => Ok(row?),
+        None => Ok(None),
+    }
+}
+
+/// All known session IDs, most-recent activity first.
+pub fn all_session_ids(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT session_id FROM sessions ORDER BY last_seen DESC")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(row?);
+    }
+    Ok(ids)
+}
+
+fn map_usage_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<crate::usage::SessionUsage> {
+    Ok(crate::usage::SessionUsage {
+        model: row.get(0)?,
+        input_tokens: row.get(1)?,
+        output_tokens: row.get(2)?,
+        cache_creation_tokens: row.get(3)?,
+        cache_read_tokens: row.get(4)?,
+        web_search_requests: row.get(5)?,
+        web_fetch_requests: row.get(6)?,
+        api_calls: row.get(7)?,
+    })
 }
 
 /// Get payload paths for events before a timestamp (for file cleanup).

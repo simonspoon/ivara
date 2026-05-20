@@ -1,6 +1,6 @@
 # Commands Reference
 
-ivara provides 11 commands for capturing, querying, and managing Claude Code session data.
+ivara provides 12 commands for capturing, querying, and managing Claude Code session data.
 
 All commands that produce tabular output support a `--json` flag for machine-readable JSON output.
 
@@ -165,7 +165,9 @@ ivara stats abc --json
 |------|------|---------|-------------|
 | `--json` | bool | `false` | Output as JSON. |
 
-Displays: scope (session ID or "global"), total events, error events, error rate (percentage), event type breakdown, tool usage breakdown, and duration (session mode only).
+Displays: scope (session ID or "global"), total events, error events, error rate (percentage), event type breakdown, tool usage breakdown, duration (session mode only), and token usage (when available).
+
+The `token_usage` block is present once usage has been recorded — automatically when a session's `SessionEnd` hook fires, or via `ivara backfill-usage`. In session mode it reflects that session; in global mode it sums every session with recorded usage. The block is omitted entirely when no usage data exists. There is no stored `total_tokens` field — total billable tokens is the sum of `input_tokens`, `output_tokens`, `cache_creation_tokens`, and `cache_read_tokens`.
 
 JSON output shape:
 
@@ -177,7 +179,17 @@ JSON output shape:
   "error_rate": 2.0,
   "event_types": [{"name": "PostToolUse", "count": 45}, ...],
   "tool_usage": [{"name": "Bash", "count": 30}, ...],
-  "duration": "1h 23m"
+  "duration": "1h 23m",
+  "token_usage": {
+    "input_tokens": 3828,
+    "output_tokens": 15037,
+    "cache_creation_tokens": 84179,
+    "cache_read_tokens": 1207609,
+    "web_search_requests": 0,
+    "web_fetch_requests": 0,
+    "api_calls": 47,
+    "model": "claude-sonnet-4-6"
+  }
 }
 ```
 
@@ -198,7 +210,9 @@ ivara summary abc --json
 |------|------|---------|-------------|
 | `--json` | bool | `false` | Output as JSON. |
 
-Displays: session ID, model (from SessionStart), CWD, time period with duration, event and error counts, and top 5 most-used tools.
+Displays: session ID, model (from SessionStart), CWD, time period with duration, event and error counts, token usage (when available), and top 5 most-used tools.
+
+The `token_usage` field is `null` until usage is recorded for the session (automatically at `SessionEnd`, or via `ivara backfill-usage`); otherwise it is an object with the same shape as the `stats` token-usage block.
 
 JSON output shape:
 
@@ -212,7 +226,8 @@ JSON output shape:
   "duration": "1h 23m",
   "total_events": 150,
   "errors": 3,
-  "top_tools": [{"tool": "Bash", "count": 30}, ...]
+  "top_tools": [{"tool": "Bash", "count": 30}, ...],
+  "token_usage": {"input_tokens": 3828, "output_tokens": 15037, "api_calls": 47, ...}
 }
 ```
 
@@ -280,6 +295,30 @@ Exit conditions:
 
 New events are polled from the database at a fixed 250ms interval. The command does not support multi-session streaming, filtering flags, or replay-only mode — use `ivara export` for one-shot replay or `ivara query` / `ivara timeline` for filtering.
 
+## backfill-usage
+
+Backfill token usage by parsing session transcripts.
+
+```bash
+ivara backfill-usage
+ivara backfill-usage abc
+ivara backfill-usage abc --force
+```
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `session` | string | no | Session ID (prefix match). Omit to process every session. |
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--force` | bool | `false` | Re-parse sessions that already have usage data. |
+
+Hook events do not carry token counts — token usage lives only in Claude Code's transcript JSONL files. ivara records usage automatically when a session's `SessionEnd` hook fires (the transcript is parsed at that point). `backfill-usage` covers the gap: historical sessions captured before this feature, and sessions whose `SessionEnd` never ran (crash, kill, or the hook not being wired).
+
+For each session, ivara looks up a transcript path recorded in any of its events, parses the transcript, and stores the aggregated usage. By default, sessions that already have usage data are skipped; `--force` re-parses them. The command prints a summary: how many sessions were updated, skipped, had no transcript path, referenced a missing transcript file, or failed to parse.
+
+Token usage is then visible via `ivara stats` and `ivara summary`.
+
 ## Source References
 
 - CLI definition (all commands and flags): `src/cli.rs`
@@ -290,4 +329,6 @@ New events are polled from the database at a fixed 250ms interval. The command d
 - Stats, summary: `src/commands/analysis.rs`
 - Prune, export: `src/commands/maintenance.rs`
 - Stream: `src/commands/stream.rs`
+- Backfill usage: `src/commands/usage.rs`
+- Transcript token-usage parser: `src/usage.rs`
 - Query engine (filter building, time parsing): `src/query.rs`

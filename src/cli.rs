@@ -144,6 +144,15 @@ pub enum Commands {
         session: String,
     },
 
+    /// Backfill token usage by parsing session transcripts
+    BackfillUsage {
+        /// Session ID (prefix match) — all sessions if omitted
+        session: Option<String>,
+        /// Re-parse sessions that already have usage data
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Install ivara hook wrapper + canonical event entries into Claude Code settings.json
     InstallHooks {
         /// Settings scope to install into
