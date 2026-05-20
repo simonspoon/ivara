@@ -15,9 +15,11 @@ ivara is a single-crate Rust CLI. All source lives under `src/`.
 | `commands::query` | `src/commands/query.rs` | Timeline, show, and filtered query output. |
 | `commands::analysis` | `src/commands/analysis.rs` | Stats and summary generation. |
 | `commands::maintenance` | `src/commands/maintenance.rs` | Prune old data and export sessions. |
+| `commands::usage` | `src/commands/usage.rs` | `backfill-usage` — parse transcripts to fill the `session_usage` table. |
 | `db` | `src/db.rs` | SQLite connection, schema DDL, all database operations. |
 | `events` | `src/events.rs` | Type definitions: `EventType` (25 variants), `Event`, `Session`, `HookInput`. |
 | `query` | `src/query.rs` | Query engine: `QueryFilter` struct, dynamic SQL builder, time parsing. |
+| `usage` | `src/usage.rs` | Transcript JSONL parser; `SessionUsage` token-usage aggregate. |
 | `storage` | `src/storage.rs` | File-backed payload storage for large events (>4KB). |
 
 ## Entry Point
@@ -59,9 +61,14 @@ db::insert_event()             -- INSERT into events table
     |
     v
 db::upsert_session()           -- INSERT or UPDATE sessions table
+    |
+    +-- SessionEnd only -------> usage::parse_transcript()
+                                   db::upsert_session_usage()
 ```
 
 The 4096-byte threshold (`storage::PAYLOAD_THRESHOLD`) determines whether the full JSON is stored inline in `metadata_json` or written to a separate file. Large payloads (tool responses, assistant messages) go to disk; small payloads stay inline for fast queries.
+
+When the event is a `SessionEnd`, capture also parses the session transcript (`hook.transcript_path`) for token usage and writes a `session_usage` row. This is best-effort — a missing or malformed transcript is swallowed so it never fails the capture. Sessions whose `SessionEnd` never fired are filled in later by `ivara backfill-usage`.
 
 ## Data Flow: Query Pipeline
 
@@ -95,11 +102,12 @@ main.rs
   +-> cli           (parse args)
   +-> db             (connect, schema)
   +-> commands/
-        capture  --> events, storage, db
+        capture  --> events, storage, db, usage
         sessions --> db
         query    --> db, storage, query (engine)
         analysis --> db, query, sessions (format_duration_secs)
         maintenance --> db, storage
+        usage    --> db, usage
 ```
 
 Key points:
@@ -125,3 +133,5 @@ All functions return `anyhow::Result`. The `main()` function catches errors, pri
 - Query engine: `src/query.rs`
 - Payload storage: `src/storage.rs`
 - Type definitions: `src/events.rs`
+- Transcript token-usage parser: `src/usage.rs`
+- Backfill command: `src/commands/usage.rs`

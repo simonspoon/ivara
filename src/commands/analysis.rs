@@ -4,6 +4,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 
 use super::sessions::format_duration_secs;
+use crate::usage::SessionUsage;
 
 /// Stats output structure.
 #[derive(Debug, Serialize)]
@@ -16,6 +17,9 @@ struct Stats {
     tool_usage: Vec<TypeCount>,
     #[serde(skip_serializing_if = "Option::is_none")]
     duration: Option<String>,
+    /// Token usage — present once captured at SessionEnd or via `backfill-usage`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token_usage: Option<SessionUsage>,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,6 +59,11 @@ pub fn stats(conn: &Connection, session: Option<&str>, json: bool) -> Result<()>
         None
     };
 
+    let token_usage = match session_id {
+        Some(ref sid) => crate::db::get_session_usage(conn, sid)?,
+        None => crate::db::total_usage(conn)?,
+    };
+
     let stats = Stats {
         scope: session_id.as_deref().unwrap_or("global").to_string(),
         total_events: total,
@@ -69,6 +78,7 @@ pub fn stats(conn: &Connection, session: Option<&str>, json: bool) -> Result<()>
             .map(|(name, count)| TypeCount { name, count })
             .collect(),
         duration,
+        token_usage,
     };
 
     if json {
@@ -97,7 +107,61 @@ pub fn stats(conn: &Connection, session: Option<&str>, json: bool) -> Result<()>
         }
     }
 
+    if let Some(ref u) = stats.token_usage {
+        print_token_usage(u);
+    }
+
     Ok(())
+}
+
+/// Print the token-usage block shared by `stats` text output.
+fn print_token_usage(u: &SessionUsage) {
+    println!("\nToken usage:");
+    println!("  {:<16} {}", "Input", group_thousands(u.input_tokens));
+    println!("  {:<16} {}", "Output", group_thousands(u.output_tokens));
+    println!(
+        "  {:<16} {}",
+        "Cache write",
+        group_thousands(u.cache_creation_tokens)
+    );
+    println!(
+        "  {:<16} {}",
+        "Cache read",
+        group_thousands(u.cache_read_tokens)
+    );
+    println!("  {:<16} {}", "Total", group_thousands(u.total_tokens()));
+    println!("  {:<16} {}", "API calls", group_thousands(u.api_calls));
+    if u.web_search_requests > 0 {
+        println!(
+            "  {:<16} {}",
+            "Web searches",
+            group_thousands(u.web_search_requests)
+        );
+    }
+    if u.web_fetch_requests > 0 {
+        println!(
+            "  {:<16} {}",
+            "Web fetches",
+            group_thousands(u.web_fetch_requests)
+        );
+    }
+}
+
+/// Format an integer with thousands separators — token counts get large.
+fn group_thousands(n: i64) -> String {
+    let digits = n.unsigned_abs().to_string();
+    let mut grouped = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    if n < 0 {
+        format!("-{grouped}")
+    } else {
+        grouped
+    }
 }
 
 /// Generate a concise session narrative.
@@ -140,9 +204,12 @@ pub fn summary(conn: &Connection, session: &str, json: bool) -> Result<()> {
         .and_then(|m| serde_json::from_str::<serde_json::Value>(m).ok())
         .and_then(|v| v.get("model").and_then(|m| m.as_str().map(String::from)));
 
+    // Token usage — present once captured at SessionEnd or via `backfill-usage`.
+    let token_usage = crate::db::get_session_usage(conn, &session_id)?;
+
     // Top tools
     let mut top_tools: Vec<_> = tool_counts.into_iter().collect();
-    top_tools.sort_by(|a, b| b.1.cmp(&a.1));
+    top_tools.sort_by_key(|t| std::cmp::Reverse(t.1));
     let top_tools: Vec<_> = top_tools.into_iter().take(5).collect();
 
     // Truncate timestamps for display
@@ -171,6 +238,7 @@ pub fn summary(conn: &Connection, session: &str, json: bool) -> Result<()> {
             "top_tools": top_tools.iter().map(|(name, count)| {
                 serde_json::json!({"tool": name, "count": count})
             }).collect::<Vec<_>>(),
+            "token_usage": token_usage,
         });
         println!("{}", serde_json::to_string_pretty(&summary)?);
         return Ok(());
@@ -186,6 +254,15 @@ pub fn summary(conn: &Connection, session: &str, json: bool) -> Result<()> {
         start_display, end_display, dur_str
     );
     println!("Events:  {} total, {} errors", events.len(), errors);
+    if let Some(ref u) = token_usage {
+        println!(
+            "Tokens:  {} in / {} out / {} total ({} API calls)",
+            group_thousands(u.input_tokens),
+            group_thousands(u.output_tokens),
+            group_thousands(u.total_tokens()),
+            group_thousands(u.api_calls),
+        );
+    }
 
     if !top_tools.is_empty() {
         println!("\nTop tools:");

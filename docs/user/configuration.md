@@ -31,7 +31,7 @@ The directory is created automatically on first use by `db::connect()`. No manua
 
 ### Database File
 
-`ivara.db` is a SQLite database containing two tables (`events` and `sessions`). See [data-model.md](../dev/data-model.md) for the full schema.
+`ivara.db` is a SQLite database containing three tables (`events`, `sessions`, and `session_usage`). See [data-model.md](../dev/data-model.md) for the full schema.
 
 ### Payload Files
 

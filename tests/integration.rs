@@ -778,3 +778,138 @@ fn capture_rejects_unknown_event() {
     let out = env.capture(r#"{"session_id":"s","hook_event_name":"FakeEvent","cwd":"/"}"#);
     assert!(!out.status.success());
 }
+
+// ---- Token Usage ----
+
+/// Write a transcript JSONL fixture. Two real assistant turns plus a synthetic
+/// entry and a duplicate uuid (both must be ignored) and a malformed line.
+/// Expected aggregate: input 110, output 130, cache-write 200, cache-read 3000,
+/// web_search 2, api_calls 2, model "claude-sonnet-4-6".
+fn write_transcript_fixture(env: &TestEnv, name: &str) -> PathBuf {
+    let lines = [
+        r#"{"type":"user","uuid":"u1"}"#,
+        r#"{"type":"assistant","uuid":"a1","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":200,"cache_read_input_tokens":1000}}}"#,
+        r#"{"type":"assistant","uuid":"a2","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":10,"output_tokens":80,"cache_creation_input_tokens":0,"cache_read_input_tokens":2000,"server_tool_use":{"web_search_requests":2,"web_fetch_requests":0}}}}"#,
+        r#"{"type":"assistant","uuid":"syn1","message":{"model":"<synthetic>","usage":{"input_tokens":9999,"output_tokens":9999,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#,
+        r#"{"type":"assistant","uuid":"a1","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":200,"cache_read_input_tokens":1000}}}"#,
+        "not valid json",
+    ];
+    let path = env.dir.join(format!("transcript-{name}.jsonl"));
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    path
+}
+
+#[test]
+fn session_end_auto_captures_token_usage() {
+    let env = TestEnv::new("usage-sessionend");
+    let transcript = write_transcript_fixture(&env, "ue1");
+
+    env.capture(
+        r#"{"session_id":"ue1","hook_event_name":"SessionStart","cwd":"/p","model":"opus"}"#,
+    );
+
+    let session_end = serde_json::json!({
+        "session_id": "ue1",
+        "hook_event_name": "SessionEnd",
+        "cwd": "/p",
+        "reason": "done",
+        "transcript_path": transcript.to_str().unwrap(),
+    })
+    .to_string();
+    let out = env.capture(&session_end);
+    assert!(out.status.success());
+
+    let stats_out = env.stdout(&["stats", "ue1", "--json"]);
+    let stats: serde_json::Value = serde_json::from_str(&stats_out).unwrap();
+    let u = &stats["token_usage"];
+    assert_eq!(u["input_tokens"], 110);
+    assert_eq!(u["output_tokens"], 130);
+    assert_eq!(u["cache_creation_tokens"], 200);
+    assert_eq!(u["cache_read_tokens"], 3000);
+    assert_eq!(u["web_search_requests"], 2);
+    assert_eq!(u["api_calls"], 2);
+    assert_eq!(u["model"], "claude-sonnet-4-6");
+}
+
+#[test]
+fn backfill_usage_populates_from_transcript() {
+    let env = TestEnv::new("usage-backfill");
+    let transcript = write_transcript_fixture(&env, "bf1");
+
+    // Event carries transcript_path but no SessionEnd fires — usage stays unrecorded.
+    let start = serde_json::json!({
+        "session_id": "bf1",
+        "hook_event_name": "SessionStart",
+        "cwd": "/p",
+        "transcript_path": transcript.to_str().unwrap(),
+    })
+    .to_string();
+    env.capture(&start);
+
+    let stats_out = env.stdout(&["stats", "bf1", "--json"]);
+    let stats: serde_json::Value = serde_json::from_str(&stats_out).unwrap();
+    assert!(
+        stats.get("token_usage").is_none(),
+        "token_usage should be absent before backfill"
+    );
+
+    let out = env.run(&["backfill-usage"]);
+    assert!(
+        out.status.success(),
+        "backfill failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stats_out = env.stdout(&["stats", "bf1", "--json"]);
+    let stats: serde_json::Value = serde_json::from_str(&stats_out).unwrap();
+    assert_eq!(stats["token_usage"]["output_tokens"], 130);
+    assert_eq!(stats["token_usage"]["api_calls"], 2);
+}
+
+#[test]
+fn summary_json_includes_token_usage() {
+    let env = TestEnv::new("usage-summary");
+    let transcript = write_transcript_fixture(&env, "sm1");
+
+    env.capture(
+        r#"{"session_id":"sm1","hook_event_name":"SessionStart","cwd":"/p","model":"opus"}"#,
+    );
+    let session_end = serde_json::json!({
+        "session_id": "sm1",
+        "hook_event_name": "SessionEnd",
+        "cwd": "/p",
+        "reason": "done",
+        "transcript_path": transcript.to_str().unwrap(),
+    })
+    .to_string();
+    env.capture(&session_end);
+
+    let out = env.stdout(&["summary", "sm1", "--json"]);
+    let summary: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(summary["token_usage"]["input_tokens"], 110);
+    assert_eq!(summary["token_usage"]["output_tokens"], 130);
+}
+
+#[test]
+fn session_end_with_missing_transcript_still_succeeds() {
+    let env = TestEnv::new("usage-missing");
+
+    // Usage capture is best-effort — an unreachable transcript must not fail capture.
+    let session_end = serde_json::json!({
+        "session_id": "mt1",
+        "hook_event_name": "SessionEnd",
+        "cwd": "/p",
+        "reason": "done",
+        "transcript_path": "/nonexistent/ivara/transcript.jsonl",
+    })
+    .to_string();
+    let out = env.capture(&session_end);
+    assert!(
+        out.status.success(),
+        "capture must succeed despite a missing transcript"
+    );
+
+    let stats_out = env.stdout(&["stats", "mt1", "--json"]);
+    let stats: serde_json::Value = serde_json::from_str(&stats_out).unwrap();
+    assert!(stats.get("token_usage").is_none());
+}
